@@ -131,32 +131,38 @@ INTERRUPT_HANDLER(RTC_CSSLSE_IRQHandler,4)
     */
 	if (RTC_GetITStatus(RTC_IT_WUT) != RESET)
 	{
-
-
 		do 
 		{
-			/* 旁路时间半个小时自减一次 */
-			if (g_run_paramter.m_tim_passby
-				&& 0 != (--g_run_paramter.m_tim_passby))
+			/* 只有在开启空调滤波是才开启本操作，为了防止设备提前定时上报 */
+#ifdef USE_AIR_FILTER
+			if (FALSE == g_run_paramter.air_filtering)
 			{
-				// --g_run_paramter.m_tim_passby;
-				break;
+#endif // USE_AIR_FILTER
+				/* 旁路时间半个小时自减一次 */
+				if (g_run_paramter.m_tim_passby
+					&& 0 != (--g_run_paramter.m_tim_passby))
+				{
+					// --g_run_paramter.m_tim_passby;
+					break;
+				}
+
+				/* 设备睡眠时间 */
+				if (g_run_paramter.m_tim_sleep
+					&& 0 != (--g_run_paramter.m_tim_sleep))
+				{
+					// --g_run_paramter.m_tim_sleep;
+					break;
+				}
+				/* 睡眠结束,唤醒设备进行定是上报 */
+				g_run_paramter.m_flg_wake_dev = TRUE;
+				g_run_paramter.m_flg_nb_rep = TRUE;
+
+
+				/* 重新装载下次睡眠持续的时间 */
+				// g_run_paramter.m_tim_sleep = 2 * g_ccfg_config.m_tim_sleep;
+#ifdef USE_AIR_FILTER
 			}
-
-			/* 设备睡眠时间 */
-			if (g_run_paramter.m_tim_sleep
-				&& 0 != (--g_run_paramter.m_tim_sleep))
-			{
-				// --g_run_paramter.m_tim_sleep;
-				break;
-			}
-			/* 睡眠结束,唤醒设备进行定是上报 */
-			g_run_paramter.m_flg_wake_dev = TRUE;
-			g_run_paramter.m_flg_nb_rep = TRUE;
-
-
-			/* 重新装载下次睡眠持续的时间 */
-			// g_run_paramter.m_tim_sleep = 2 * g_ccfg_config.m_tim_sleep;
+#endif // USE_AIR_FILTER
 
 		} while (0);
 

@@ -49,7 +49,7 @@ extern "C" {
 	/*************************     全局结构体定义     *************************/
 #define		CLOSE_ALL_LED()			p_init_led()
 	/*************************      全局变量定义      *************************/
-
+	uint8_t b_judgewake_flag = FALSE;        // 判断一分钟够不够振动10次
 	/*************************        函数声明        *************************/
 
 	/*************************        函数实现        *************************/
@@ -66,6 +66,85 @@ extern "C" {
 
 	static void no_use_gpio_init(void);
 	static void lowlevel_restore(void);
+
+	/**
+  * ***********************************************************************
+  * @brief	空调震动滤波算法
+  *
+  *	@param  :
+  *
+  * @retval void:
+  *
+  * @attention	: none
+  * ***********************************************************************
+  */
+#ifdef USE_AIR_FILTER
+
+  /* 空调GPS滤波窗口值, 不可超过6 */
+#define AIR_SAMPLE_CNT               10
+  /* 该值越小，越难报警 */
+#define AIR_ALARM_THRESHOLD          7
+
+	void p_air_filter(void)
+	{
+		uint16_t alm_signal = 0x00;    //报警信号,检测到震动+1,未检测到震动-1 
+		uint8_t windows_cnt = 0x00;
+		uint8_t alm_cnt = 0x00;
+
+		g_run_paramter.air_filtering = TRUE;
+
+		RTC_WakeUpCmd(DISABLE);
+		RTC_SetWakeUpCounter(4);
+		RTC_WakeUpCmd(ENABLE);
+
+		while (windows_cnt < AIR_SAMPLE_CNT) 
+		{
+			switch_uninit();
+			g_run_paramter.m_switch_trigger_cnt = 0;
+
+			/* 进入睡眠 */
+			halt();
+			p_init_mercury();
+			/* 必须再次进入睡眠，由于代码执行速度较快，还未发生中断就已经再次进入睡眠 */
+			halt();
+
+			alm_signal <<= 1;
+
+			/* 如果醒过来的时候，有震动，则设定临时醒过来要过一段时间才能睡觉 */
+			if ((g_run_paramter.m_switch_trigger_cnt >= g_ccfg_config.m_cnt_sw_trigger)) 
+			{
+				alm_signal += 1;
+				alm_cnt += 1;
+			}
+			++windows_cnt;
+		}
+		/* 去掉后面的0  最后一位为0 eg.0x0010 */
+		while (alm_signal && !(alm_signal & 0x0001)) 
+		{
+			alm_signal >>= 1;
+		}
+		/*
+		0000 & 0001 = 1
+		*/
+
+		/* 判断是否报警 0000 0111 为非报警 */
+		if (alm_signal && (alm_signal & (alm_signal + 1)) && alm_cnt < AIR_ALARM_THRESHOLD) 
+		{
+			g_run_paramter.m_switch_trigger_cnt = 0;
+			g_run_paramter.m_flg_wake_dev = TRUE;
+			g_run_paramter.m_flg_alarm = TRUE;
+
+			b_judgewake_flag = TRUE;
+		}
+
+		/* 恢复休眠时间 */
+		RTC_WakeUpCmd(DISABLE);
+		RTC_SetWakeUpCounter(65000);
+		RTC_WakeUpCmd(ENABLE);
+
+		g_run_paramter.air_filtering = FALSE;
+	}
+#endif // USE_AIR_FILTER
 
 
 
@@ -92,62 +171,88 @@ extern "C" {
 		/* 关机前的事务 */
 		dev_shutdown_routine();
 
-		
-
+		/* 板级初始化 */
 		lowlevel_init();
 
 		/* 使能全局中断 */
 		enableInterrupts();
 
 		/* 除非RTC唤醒或者外部中断唤醒，否则继续休眠 */
+		g_run_paramter.m_flg_wake_dev = FALSE;
+		b_judgewake_flag = FALSE;
 
-		do {
+		/* 休眠前进行一次喂狗 */
+		IWDG_RELOAD();
+		/* 未被唤醒 */
+		halt();
 
-			/* 休眠前进行一次喂狗 */
-			IWDG_RELOAD();
+		CLK_PeripheralClockConfig(CLK_Peripheral_TIM3, ENABLE);
+		TIM3_Cmd(ENABLE);
 
-			/* 未被唤醒 */
-			halt();
+#ifndef USE_AIR_FILTER
+		g_run_paramter.m_switch_trigger_cnt = 0;
+#endif // !USE_AIR_FILTER
 
+		/*除非RTC唤醒或者外部中断唤醒，否则继续休眠*/
+		while (FALSE == g_run_paramter.m_flg_wake_dev) 
+		{
+			IWDG_RELOAD();  //外部中断唤醒，重新喂狗
+
+#ifndef USE_AIR_FILTER
 			g_run_paramter.m_switch_trigger_cnt = 0;
+#endif // !USE_AIR_FILTER
 
-			CLK_PeripheralClockConfig(CLK_Peripheral_TIM3, ENABLE);
-			TIM3_Cmd(ENABLE);
-
-
-			/* 判断是否是振动唤醒 */
-			for (time = GET_10MS_TIMER() + 14; time > GET_10MS_TIMER();)
+			/* 用来检测是否是外部中断唤醒 */
+			while (b_judgewake_flag == FALSE) 
 			{
-				IWDG_RELOAD();
-				/* 检测140ms */
-				if (g_run_paramter.m_switch_trigger_cnt >= g_ccfg_config.m_cnt_sw_trigger)
+				/* 设备开机 */
+				IWDG_RELOAD();  //外部中断唤醒，重新喂狗
+
+#ifdef USE_AIR_FILTER
+				b_judgewake_flag = TRUE;
+
+				/* 振动达到阈值，并且没有处于旁路状态 */
+				if (g_run_paramter.m_tim_passby == 0 && g_run_paramter.m_switch_trigger_cnt > 0) 
 				{
-					g_run_paramter.m_flg_alarm = TRUE;
-					g_run_paramter.m_flg_wake_dev = TRUE;
-					break;
+					p_air_filter();
 				}
+#else
+				for (time = GET_10MS_TIMER + 14;time > GET_10MS_TIMER;) 
+				{
+					/*判断旁路时间，旁路时间到达后如果有震动就会唤醒  检测140ms */
+					if ((g_run_paramter.m_switch_trigger_cnt >= g_ccfg_config.m_cnt_sw_trigger)
+						&& (g_run_paramter.m_tim_passby == 0)) 
+					{
+						b_judgewake_flag = TRUE;
+						g_run_paramter.m_flg_alarm = TRUE;
+						g_run_paramter.m_flg_wake_dev = TRUE;
+						break;
+					}
+				}
+#endif // USE_AIR_FILTER
 			}
 
-			if (FALSE == g_run_paramter.m_flg_wake_dev)
+			if (FALSE == g_run_paramter.m_flg_wake_dev) 
 			{
+#ifdef USE_AIR_FILTER
+				g_run_paramter.m_switch_trigger_cnt = 0;
+#endif // USE_AIR_FILTER
+				/* 重新关机 */
 				CLK_PeripheralClockConfig(CLK_Peripheral_TIM3, DISABLE);
 				TIM3_Cmd(DISABLE);
 
 				/* 关闭定时器3 后喂狗 */
 				IWDG_RELOAD();
 			}
+			b_judgewake_flag = FALSE;
 
-		} while (FALSE == g_run_paramter.m_flg_wake_dev);
-
-	
+		}
 
 		/* 唤醒设备 */
 		lowlevel_restore();
 
 		/* 开机事务 */
 		dev_boot_routine();
-
-
 
 	}
 

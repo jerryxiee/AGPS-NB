@@ -66,6 +66,13 @@ typedef enum
 
 
 /*************************       全局宏定义       *************************/
+/* 是否使用空调震动过滤算法 */
+#define USE_AIR_FILTER_ALGO     1
+
+#if (USE_AIR_FILTER_ALGO)
+#define USE_AIR_FILTER          1 
+#endif //(USE_AIR_FILTER_ALGO)
+
 #define FALSE					0x00
 #define TURE					(!FALSE)
 
@@ -273,6 +280,10 @@ typedef struct {
 	}m_udp_transfer;
 
 #endif // USE_UDP
+
+#ifdef USE_AIR_FILTER
+	uint8_t air_filtering;              // 是否正在进行空调滤波操作
+#endif // USE_AIR_FILTER
 
 	uint8_t  m_dev_voltage;				// 设备电压
 	uint16_t m_switch_trigger_cnt;

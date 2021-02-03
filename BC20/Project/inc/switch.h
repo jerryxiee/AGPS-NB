@@ -42,6 +42,7 @@ extern "C" {
 /*************************      全局变量定义      *************************/
 
 /*************************        函数声明        *************************/
+	void switch_uninit(void);
 	void p_init_mercury(void);
 
 	void switch_ctrl(uint8_t sw1, uint8_t sw2);
